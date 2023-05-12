@@ -1,0 +1,300 @@
+#include <Arduino.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <DHT_U.h>
+
+
+// Definición de pines
+#define DHTPIN_FRONT 2
+#define DHTPIN_BACK 27
+#define LED_BACK 23
+#define LED_FRONT 22
+//#define LED3 
+#define FAN_FRONT 26
+#define FAN_FRONT2 25
+#define FAN_BACK 4
+#define BUTTON_UP 33
+#define BUTTON_DOWN 32
+
+// Definición del tipo de sensor
+#define DHTTYPE DHT11
+
+// Inicialización de los sensores DHT
+DHT dht_front(DHTPIN_FRONT, DHTTYPE);
+DHT dht_back(DHTPIN_BACK, DHTTYPE);
+
+// Variables para leer la temperatura en el SM del sensor POSTERIOR
+float tempBack;
+int control_temp_1 = 0;
+int control_prev_temp1 = 0;
+unsigned long t_temp1 = 0;
+unsigned long t_0_temp1 = 0;
+unsigned long t_wait_temp1 = 200; // tiempo de espera para que vuelva a leer los datos
+// Variables para leer la temperatura en el SM del sensor FRONTAL
+float tempFront;
+int control_temp_2 = 0;
+int control_prev_temp2 = 0;
+unsigned long t_temp2 = 0;
+unsigned long t_0_temp2 = 0;
+unsigned long t_wait_temp2 = 200;
+//Switch Variables UP
+int state_s1 = 0;
+int state_prev_s1 = 0;
+int val_s1 = 0;
+unsigned long t_s1 = 0;
+unsigned long t_0_s1 = 0;
+unsigned long bounce_delay_s1 = 10;
+//unsigned long hold_delay_s1 = 1000;
+//Switch Variables DOWN
+int state_s2 = 0;
+int state_prev_s2 = 0;
+int val_s2 = 0;
+unsigned long t_s2 = 0;
+unsigned long t_0_s2 = 0;
+unsigned long bounce_delay_s2 = 10;
+//unsigned long hold_delay_s2 = 1000;
+int desiredTemp = 25; // Temperatura inicial deseada
+unsigned long lastPrintTime = 0;  // Guarda la última vez que se imprimieron las temperaturas
+unsigned long printInterval = 2000;  // Intervalo de tiempo entre impresiones (2000 ms = 2 s)
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Inicializar sensores DHT
+  dht_front.begin();
+  dht_back.begin();
+
+  // Configurar pines de entrada y salida
+  pinMode(LED_BACK, OUTPUT);
+  pinMode(LED_FRONT, OUTPUT);
+  pinMode(FAN_FRONT, OUTPUT);
+  pinMode(FAN_FRONT2, OUTPUT);
+  pinMode(FAN_BACK, OUTPUT);
+  pinMode(BUTTON_UP, INPUT_PULLUP);
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);
+}
+
+void SM_s1() {
+  //Almost every state needs these lines, so I'll put it outside the State Machine
+  val_s1 = digitalRead(BUTTON_UP);
+  state_prev_s1 = state_s1;
+
+  //State Machine Section
+  switch (state_s1) {
+    case 0: //RESET!
+      //Catch all "home base" for the State MAchine
+      state_s1 = 1;
+    break;
+
+    case 1: //WAIT
+      //Wait for the switch to go low
+      if (val_s1 == LOW) {state_s1 = 2;}
+    break;
+
+    case 2: //ARMING!
+      //Record the time and proceed to ARMED
+      t_0_s1 = millis();
+      state_s1 = 3;
+    break;
+
+    case 3: //ARMED
+      //Check to see if the proper has delay has passed.  If a bounce occures then RESET
+      t_s1 = millis();
+      if (t_s1 - t_0_s1 > bounce_delay_s1) {state_s1 = 4;}
+      if (val_s1 == HIGH) {state_s1 = 0;}
+    break;
+
+    case 4: //DRAWN
+      //If switch goes HIGH, then TRIGGER. Also check timer for a "Long Pess"
+      t_s1 = millis();
+      if (val_s1 == HIGH) {state_s1 = 5;}
+      //if (t_s1 - t_0_s1 > hold_delay_s1) {state_s1 = 6;}
+    break;
+
+    case 5: //TRIGGERED!
+      //reset the State Machine
+      state_s1 = 0;
+    break;
+
+    case 6: //HOLD!
+      //proceed to LOW WAIT
+      state_s1 = 7;
+    break;
+
+    case 7: //LOW WAIT
+      //wait for switch to go back HIGH, then reset
+      if (val_s1 == HIGH) {state_s1 = 0;}
+    break;
+  }
+  
+}
+
+void SM_s2() {
+  val_s2 = digitalRead(BUTTON_DOWN);
+  state_prev_s2 = state_s2;
+
+  switch (state_s2) {
+    case 0: //RESET!
+      state_s2 = 1;
+      break;
+
+    case 1: //WAIT
+      if (val_s2 == LOW) {state_s2 = 2;}
+      break;
+
+    case 2: //ARMING!
+      t_0_s2 = millis();
+      state_s2 = 3;
+      break;
+
+    case 3: //ARMED
+      t_s2 = millis();
+      if (t_s2 - t_0_s2 > bounce_delay_s2) {state_s2 = 4;}
+      if (val_s2 == HIGH) {state_s2 = 0;}
+      break;
+
+    case 4: //DRAWN
+      t_s2 = millis();
+      if (val_s2 == HIGH) {state_s2 = 5;}
+      break;
+
+    case 5: //TRIGGERED!
+      state_s2 = 0;
+      break;
+
+    case 6: //HOLD!
+      state_s2 = 7;
+      break;
+
+    case 7: //LOW WAIT
+      if (val_s2 == HIGH) {state_s2 = 0;}
+      break;
+  }
+}
+
+
+void SM_TEMP_S1(){ // REGULACION PARA LA PARTE POSTERIOR
+  control_prev_temp1 = control_temp_1;
+  switch (control_temp_1)
+  {
+  
+  case 0: // HOME
+    t_0_temp1 = millis();
+    control_temp_1 = 1;
+    break;
+
+  case 1: // LEER SENSORES DHT // READ DHT SENSORS  
+    t_temp1 = millis();
+    if(t_temp1 - t_0_temp1 > t_wait_temp1){
+      tempBack = dht_back.readTemperature();
+
+      if (isnan(tempBack)) {
+        Serial.println("Error al leer el sensor DHT posterior");
+        control_temp_1 = 0;
+        }else{
+          control_temp_1 = 2;
+          }
+    }
+     
+    break;
+
+  case 2: // DESIRED TEMP 
+    control_temp_1 = 3;
+    break;
+
+  case 3: // TEMP > DESIRED_TEMP or TEMP < DESIRED_TEMP
+    if(tempBack > desiredTemp){
+      control_temp_1 = 4;
+    }else if(tempBack <= desiredTemp){
+      control_temp_1 = 5;
+    }
+    break;
+
+  case 4: // TURN ON FANs AND LEDs
+    digitalWrite(FAN_BACK, HIGH);
+    digitalWrite(LED_BACK, HIGH);
+    control_temp_1 = 0;
+    break;
+
+  case 5: // TURN OFF FANs AND LEDs
+    digitalWrite(FAN_BACK, LOW);
+    digitalWrite(LED_BACK, LOW);
+    control_temp_1 = 0;
+    break;
+
+  }
+}
+
+
+void SM_TEMP_S2(){ // REGULACION PARA LA PARTE FRONTAL
+  control_prev_temp2 = control_temp_2;
+  switch (control_temp_2) {
+    case 0: // HOME
+      t_0_temp2 = millis();
+      control_temp_2 = 1;
+      break;
+    case 1: // LEER SENSORES DHT
+      t_temp2 = millis();
+      if(t_temp2 - t_0_temp2 > t_wait_temp2){
+        tempFront = dht_front.readTemperature();
+
+        if (isnan(tempFront)) {
+          Serial.println("Error al leer el sensor DHT frontal");
+          control_temp_2 = 0;
+        }
+        else {
+          control_temp_2 = 2;
+        }
+      }
+      break;
+    case 2: // DESIRED TEMP
+      control_temp_2 = 3;
+      break;
+    case 3: // TEMP > DESIRED_TEMP or TEMP < DESIRED_TEMP
+      if(tempFront > desiredTemp){
+        control_temp_2 = 4;
+      } else if(tempFront <= desiredTemp){
+        control_temp_2 = 5;
+      }
+      break;
+    case 4: // TURN ON FANs AND LEDs
+      digitalWrite(FAN_FRONT, HIGH);
+      digitalWrite(FAN_FRONT2, HIGH);
+      digitalWrite(LED_FRONT, HIGH);
+      control_temp_2 = 0;
+      break;
+    case 5: // TURN OFF FANs AND LEDs
+      digitalWrite(FAN_FRONT, LOW);
+      digitalWrite(FAN_FRONT2, LOW);
+      digitalWrite(LED_FRONT, LOW);
+      control_temp_2 = 0;
+      break;
+  }
+}
+
+
+
+void loop() {
+  SM_TEMP_S1(); // Ejecutar la máquina de estados para la parte posterior
+  SM_TEMP_S2(); // Ejecutar la máquina de estados para la parte frontal
+  SM_s1();
+  SM_s2();
+  if (state_s1 == 5 && desiredTemp < 27) {desiredTemp++;}
+  if (state_s2 == 5  && desiredTemp > 21) {desiredTemp--;} 
+  // Verifica si ha pasado el intervalo de tiempo desde la última vez que se imprimieron las temperaturas
+  if (millis() - lastPrintTime >= printInterval) {
+    // Imprime las temperaturas
+    Serial.print("Temperatura posterior: ");
+    Serial.print(tempBack);
+    Serial.print(" | Temperatura frontal: ");
+    Serial.print(tempFront);
+    Serial.print(" | Temperatura deseada: ");
+    Serial.println(desiredTemp);
+
+    // Actualiza el tiempo de la última impresión
+    lastPrintTime = millis();
+  }
+}
+
+
+
